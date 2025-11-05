@@ -1,4 +1,4 @@
-"""Simple forward-walk controller with a scripted gait for the 12-DOF robot."""
+"""Simple forward-walk controller with a scripted joint-space gait."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class ForwardMotionController:
         "ankle_roll_joint",
     )
     _MAX_FORCE = 150.0
-    _STEP_FREQUENCY = 1.2  # steps per second for each leg
+    _STEP_FREQUENCY = 1.0  # steps per second for each leg
     _HIP_SWING = 0.30
     _HIP_ROLL_SWING = 0.12
     _YAW_SWING = 0.05
@@ -76,9 +76,6 @@ class ForwardMotionController:
         self._joint_indices: Dict[str, int] = {}
         self._rest_pose: Dict[str, float] = {}
         self._last_distance = 0.0
-        self._last_update_time: Optional[float] = None
-        self._debug_last_report_time: float = -math.inf
-        self._debug_update_count: int = 0
 
     @staticmethod
     def _derive_targets(speed: float, mode: str, amount: float) -> Tuple[float, float]:
@@ -137,16 +134,6 @@ class ForwardMotionController:
             horizontal = (horizontal[0] / norm, horizontal[1] / norm, 0.0)
         self._forward_dir = horizontal
         self._last_distance = 0.0
-        self._last_update_time = self._start_time
-        print(
-            "[ForwardMotion] start",
-            f"speed={self._speed:.3f} m/s",
-            f"mode={self._mode}",
-            f"target_distance={self._target_distance:.3f} m",
-            f"target_duration={self._target_duration:.3f} s",
-            f"forward_dir=({self._forward_dir[0]:.3f},{self._forward_dir[1]:.3f},{self._forward_dir[2]:.3f})",
-            flush=True,
-        )
 
     def stop(self, now: Optional[float] = None) -> None:
         if self._finished:
@@ -159,13 +146,6 @@ class ForwardMotionController:
             duration = max(0.0, now - self._start_time)
         self._summary = ForwardMotionSummary(duration_s=duration, distance_m=self._last_distance)
         self._finished = True
-        if self._summary is not None:
-            print(
-                "[ForwardMotion] stop",
-                f"duration={self._summary.duration_s:.3f} s",
-                f"distance={self._summary.distance_m:.3f} m",
-                flush=True,
-            )
 
     def update(self, now: Optional[float] = None) -> None:
         if self._finished:
@@ -181,114 +161,36 @@ class ForwardMotionController:
         current_time = now if now is not None else time.perf_counter()
         elapsed = max(0.0, current_time - self._start_time)
 
-        dt = 0.0
-        if self._last_update_time is not None:
-            dt = max(0.0, current_time - self._last_update_time)
-        self._last_update_time = current_time
-
         if self._target_duration <= 0.0:
             self.stop(current_time)
             return
 
-        travelled = self._distance_travelled()
-        self._last_distance = travelled
-
-        commanded_speed = 0.0
-        if self._mode == "distance":
-            remaining_distance = self._target_distance - travelled
-            if remaining_distance <= 1e-4:
-                self.stop(current_time)
-                return
-            commanded_speed = self._apply_base_motion(
-                dt,
-                remaining_distance=remaining_distance,
-                remaining_duration=None,
-            )
-        else:
-            remaining_duration = self._target_duration - elapsed
-            if remaining_duration <= 0.0:
-                self.stop(current_time)
-                return
-            commanded_speed = self._apply_base_motion(
-                dt,
-                remaining_distance=None,
-                remaining_duration=remaining_duration,
-            )
-
+        progress = min(elapsed / self._target_duration, 1.0)
+        distance = progress * self._target_distance
+        self._apply_base_motion(distance)
         self._apply_gait(elapsed)
 
-        travelled = self._distance_travelled()
-        self._last_distance = travelled
+        if progress >= 1.0:
+            self.stop(current_time)
 
-        if self._mode == "distance":
-            if (self._target_distance - travelled) <= 1e-4:
-                self.stop(current_time)
-        else:
-            if (self._target_duration - elapsed) <= 0.0:
-                self.stop(current_time)
-
-        self._debug_update_count += 1
-        if current_time - self._debug_last_report_time >= 0.5:
-            base_pos, base_orn = pb.getBasePositionAndOrientation(self._robot_id)
-            base_vel, base_angular = pb.getBaseVelocity(self._robot_id)
-            remaining_distance = self._target_distance - travelled if self._mode == "distance" else float("nan")
-            remaining_duration = self._target_duration - elapsed if self._mode == "time" else float("nan")
-            roll, pitch, yaw = pb.getEulerFromQuaternion(base_orn)
-            print(
-                "[ForwardMotion] update",
-                f"count={self._debug_update_count}",
-                f"elapsed={elapsed:.3f} s",
-                f"dt={dt:.4f} s",
-                f"travelled={travelled:.3f} m",
-                f"remaining_distance={remaining_distance:.3f}",
-                f"remaining_duration={remaining_duration:.3f}",
-                f"cmd_speed={commanded_speed:.3f} m/s",
-                f"base_pos=({base_pos[0]:.3f},{base_pos[1]:.3f},{base_pos[2]:.3f})",
-                f"base_rpy=({math.degrees(roll):.2f},{math.degrees(pitch):.2f},{math.degrees(yaw):.2f}) deg",
-                f"base_vel=({base_vel[0]:.3f},{base_vel[1]:.3f},{base_vel[2]:.3f})",
-                flush=True,
-            )
-            self._debug_last_report_time = current_time
-
-    def _distance_travelled(self) -> float:
+    def _apply_base_motion(self, travelled: float) -> None:
         assert self._start_position is not None
+        assert self._start_orientation is not None
         assert self._forward_dir is not None
 
-        current_position, _ = pb.getBasePositionAndOrientation(self._robot_id)
-        delta = (
-            current_position[0] - self._start_position[0],
-            current_position[1] - self._start_position[1],
+        new_position = (
+            self._start_position[0] + self._forward_dir[0] * travelled,
+            self._start_position[1] + self._forward_dir[1] * travelled,
+            self._start_position[2],
+        )
+        pb.resetBasePositionAndOrientation(self._robot_id, new_position, self._start_orientation)
+        forward_velocity = (
+            self._forward_dir[0] * self._speed,
+            self._forward_dir[1] * self._speed,
             0.0,
         )
-        travelled = delta[0] * self._forward_dir[0] + delta[1] * self._forward_dir[1]
-        return max(0.0, travelled)
-
-    def _apply_base_motion(
-        self,
-        dt: float,
-        *,
-        remaining_distance: Optional[float],
-        remaining_duration: Optional[float],
-    ) -> float:
-        assert self._forward_dir is not None
-
-        commanded_speed = self._speed
-        if remaining_distance is not None:
-            if dt > 1e-6:
-                max_distance_this_step = self._speed * dt
-                if remaining_distance < max_distance_this_step:
-                    commanded_speed = max(0.0, remaining_distance / dt)
-        elif remaining_duration is not None:
-            if remaining_duration <= 0.0:
-                commanded_speed = 0.0
-
-        linear_velocity = (
-            self._forward_dir[0] * commanded_speed,
-            self._forward_dir[1] * commanded_speed,
-            0.0,
-        )
-        pb.resetBaseVelocity(self._robot_id, linear_velocity, (0.0, 0.0, 0.0))
-        return commanded_speed
+        pb.resetBaseVelocity(self._robot_id, forward_velocity, (0.0, 0.0, 0.0))
+        self._last_distance = travelled
 
     def _apply_gait(self, elapsed: float) -> None:
         phase = elapsed * self._STEP_FREQUENCY * 2.0 * math.pi

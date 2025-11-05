@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
+import queue
 import sys
 import time
-from collections import deque
 from pathlib import Path
 from typing import Optional
+
+import multiprocessing as mp
 
 import pybullet as pb
 import pybullet_data
@@ -64,13 +67,21 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--walk-speed",
         type=float,
-        default=1.0,
+        default=0.6,
         help="Forward speed in meters per second while walking.",
     )
     parser.add_argument(
         "--sensors",
+        dest="sensors",
         action="store_true",
-        help="Enable camera and IMU debug overlays in the GUI (may require writable Matplotlib cache).",
+        default=None,
+        help="Enable camera and IMU debug overlays in the GUI (default: on when GUI).",
+    )
+    parser.add_argument(
+        "--no-sensors",
+        dest="sensors",
+        action="store_false",
+        help="Disable camera and IMU debug overlays in the GUI.",
     )
     args = parser.parse_args(argv)
 
@@ -78,6 +89,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--walk-amount must be non-negative")
     if args.walk_speed <= 0.0:
         parser.error("--walk-speed must be positive")
+
+    if args.sensors is None:
+        args.sensors = args.gui
 
     return args
 
@@ -118,6 +132,129 @@ def _rotate_vector(
     )
 
 
+def _imu_plot_worker(data_queue: "mp.Queue[tuple[float, float, float, float] | None]", window: float) -> None:
+    """Child-process IMU plotter to avoid blocking the PyBullet GUI thread."""
+    import time as _time
+    from collections import deque as _deque
+
+    try:
+        import matplotlib.pyplot as _plt
+    except Exception:
+        return
+
+    _plt.ion()
+    fig, axes = _plt.subplots(3, 1, sharex=True, figsize=(5, 6))
+    axes = axes.tolist()
+    fig.suptitle("IMU Orientation (deg)")
+    colors = [("roll", "tab:red"), ("pitch", "tab:orange"), ("yaw", "tab:blue")]
+    lines = {}
+    for ax, (key, color) in zip(axes, colors):
+        line, = ax.plot([], [], color=color, linewidth=1.5)
+        ax.set_ylabel(f"{key.capitalize()} (deg)")
+        ax.set_ylim(-180.0, 180.0)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        lines[key] = line
+    axes[-1].set_xlabel("Time (s)")
+    fig.tight_layout()
+    try:
+        fig.canvas.manager.set_window_title("IMU Orientation (Roll/Pitch/Yaw)")
+    except Exception:
+        pass
+
+    start_time: Optional[float] = None
+    history = {
+        "t": _deque(maxlen=int(window * 240)),
+        "roll": _deque(maxlen=int(window * 240)),
+        "pitch": _deque(maxlen=int(window * 240)),
+        "yaw": _deque(maxlen=int(window * 240)),
+    }
+
+    last_draw = _time.perf_counter()
+    running = True
+    while running:
+        try:
+            sample = data_queue.get(timeout=0.1)
+        except queue.Empty:
+            sample = "__EMPTY__"
+
+        if sample == "__EMPTY__":
+            if not _plt.fignum_exists(fig.number):
+                break
+        elif sample is None:
+            break
+        else:
+            ts, roll, pitch, yaw = sample
+            if start_time is None:
+                start_time = ts
+            rel_time = ts - start_time
+            history["t"].append(rel_time)
+            history["roll"].append(roll)
+            history["pitch"].append(pitch)
+            history["yaw"].append(yaw)
+
+        now = _time.perf_counter()
+        if now - last_draw >= 0.05:
+            if history["t"]:
+                t_vals = list(history["t"])
+                lines["roll"].set_data(t_vals, list(history["roll"]))
+                lines["pitch"].set_data(t_vals, list(history["pitch"]))
+                lines["yaw"].set_data(t_vals, list(history["yaw"]))
+                x_max = t_vals[-1]
+                x_min = max(0.0, x_max - window)
+                for ax in axes:
+                    ax.set_xlim(x_min, max(x_max, window))
+                fig.canvas.draw_idle()
+                fig.canvas.flush_events()
+            try:
+                _plt.pause(0.001)
+            except Exception:
+                break
+            last_draw = now
+
+    try:
+        _plt.close(fig)
+    except Exception:
+        pass
+
+
+class _IMUPlotter:
+    """Async IMU plot hosted in a separate process."""
+
+    def __init__(self, window: float = 10.0) -> None:
+        self._window = window
+        ctx = mp.get_context("spawn")
+        self._queue: mp.Queue = ctx.Queue(maxsize=8)
+        self._process = ctx.Process(target=_imu_plot_worker, args=(self._queue, window), daemon=True)
+        self._process.start()
+
+    def push(self, timestamp: float, roll: float, pitch: float, yaw: float) -> None:
+        if not self._process.is_alive():
+            return
+        try:
+            self._queue.put_nowait((timestamp, roll, pitch, yaw))
+        except queue.Full:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait((timestamp, roll, pitch, yaw))
+            except queue.Full:
+                pass
+
+    def close(self) -> None:
+        if self._process is None:
+            return
+        try:
+            self._queue.put_nowait(None)
+        except Exception:
+            pass
+        self._process.join(timeout=2.0)
+        if self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=1.0)
+
+
 class _SensorVisualizer:
     """Render camera previews and IMU attitude into the PyBullet GUI."""
 
@@ -141,19 +278,15 @@ class _SensorVisualizer:
         self._camera_fov = 1.047  # ~60 degrees, matches URDF sensor configuration.
         self._camera_near = 0.1
         self._camera_far = 50.0
-        self._camera_renderer = pb.ER_BULLET_HARDWARE_OPENGL
+        self._camera_renderer = pb.ER_TINY_RENDERER
         self._imu_plot_enabled = plt is not None
-        self._imu_times: deque[float] = deque(maxlen=600)
-        self._imu_series = {
-            "roll": deque(maxlen=600),
-            "pitch": deque(maxlen=600),
-            "yaw": deque(maxlen=600),
-        }
-        self._imu_plot_window = 10.0
-        self._imu_plot_start: Optional[float] = None
-        self._imu_fig = None
-        self._imu_axes = None
-        self._imu_lines: dict[str, object] = {}
+        self._imu_plotter: Optional[_IMUPlotter] = None
+        if self._imu_plot_enabled:
+            try:
+                self._imu_plotter = _IMUPlotter(window=10.0)
+            except Exception as exc:
+                print("[SensorVisualizer] Failed to start IMU plotter, falling back to text.", f"error={exc}", flush=True)
+                self._imu_plot_enabled = False
 
     def enable_gui_elements(self) -> None:
         pb.configureDebugVisualizer(pb.COV_ENABLE_GUI, 1)
@@ -226,9 +359,7 @@ class _SensorVisualizer:
 
         self._record_imu_sample(now, roll_deg, pitch_deg, yaw_deg)
 
-        if self._imu_plot_enabled:
-            self._ensure_imu_plot()
-            self._refresh_imu_plot()
+        if self._imu_plot_enabled and self._imu_plotter is not None:
             if self._imu_text_uid is not None:
                 pb.removeUserDebugItem(self._imu_text_uid)
                 self._imu_text_uid = None
@@ -250,63 +381,12 @@ class _SensorVisualizer:
             )
 
     def _record_imu_sample(self, now: float, roll_deg: float, pitch_deg: float, yaw_deg: float) -> None:
-        if not self._imu_plot_enabled:
-            return
+        if self._imu_plot_enabled and self._imu_plotter is not None:
+            self._imu_plotter.push(now, roll_deg, pitch_deg, yaw_deg)
 
-        if self._imu_plot_start is None:
-            self._imu_plot_start = now
-
-        rel_time = now - self._imu_plot_start
-        self._imu_times.append(rel_time)
-        self._imu_series["roll"].append(roll_deg)
-        self._imu_series["pitch"].append(pitch_deg)
-        self._imu_series["yaw"].append(yaw_deg)
-
-    def _ensure_imu_plot(self) -> None:
-        if not self._imu_plot_enabled or self._imu_fig is not None:
-            return
-
-        plt.ion()
-        fig, axes = plt.subplots(3, 1, sharex=True, figsize=(5, 6))
-        axes = axes.tolist()
-        fig.suptitle("IMU Orientation (deg)")
-        colors = [("roll", "tab:red"), ("pitch", "tab:orange"), ("yaw", "tab:blue")]
-        for ax, (key, color) in zip(axes, colors):
-            line, = ax.plot([], [], color=color, linewidth=1.5)
-            ax.set_ylabel(f"{key.capitalize()} (deg)")
-            ax.set_ylim(-180.0, 180.0)
-            ax.grid(True, linestyle="--", alpha=0.4)
-            self._imu_lines[key] = line
-        axes[-1].set_xlabel("Time (s)")
-        fig.tight_layout()
-        try:
-            fig.canvas.manager.set_window_title("IMU Orientation (Roll/Pitch/Yaw)")
-        except Exception:
-            pass
-        self._imu_fig = fig
-        self._imu_axes = axes
-
-    def _refresh_imu_plot(self) -> None:
-        if not self._imu_plot_enabled or self._imu_fig is None or self._imu_axes is None:
-            return
-
-        times = list(self._imu_times)
-        if not times:
-            return
-
-        end_time = times[-1]
-        start_time = max(0.0, end_time - self._imu_plot_window)
-        x_max = max(end_time, self._imu_plot_window)
-
-        for idx, (key, line) in enumerate(self._imu_lines.items()):
-            data = list(self._imu_series[key])
-            line.set_data(times, data)
-            ax = self._imu_axes[idx]
-            ax.set_xlim(start_time, x_max)
-
-        self._imu_fig.canvas.draw_idle()
-        self._imu_fig.canvas.flush_events()
-        plt.pause(0.001)
+    def shutdown(self) -> None:
+        if self._imu_plotter is not None:
+            self._imu_plotter.close()
 
 
 def _ensure_above_ground(body_id: int, clearance: float = 2e-3, plane_z: float = 0.0) -> None:
@@ -351,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
     if cid < 0:
         raise RuntimeError("Failed to connect to PyBullet.")
 
+    sensor_visualizer: Optional[_SensorVisualizer] = None
     try:
         # Allow URDFs to load relative meshes from your repo path if needed.
         pb.setAdditionalSearchPath(str(_workspace_root() / "robot"))
@@ -368,17 +449,20 @@ def main(argv: list[str] | None = None) -> int:
         print("[Main] robot URDF loaded", f"robot_id={robot_id}", flush=True)
 
         link_map = _link_name_map(robot_id)
-        sensor_visualizer: Optional[_SensorVisualizer] = None
         if connection_mode == pb.GUI and args.sensors:
-            print("[Main] enabling sensor visualizer overlays", flush=True)
-            sensor_visualizer = _SensorVisualizer(
-                robot_id=robot_id,
-                camera_link_index=link_map.get("camera_optical_frame"),
-                imu_link_index=link_map.get("imu_link"),
-            )
-            sensor_visualizer.enable_gui_elements()
+            try:
+                print("[Main] enabling sensor visualizer overlays", flush=True)
+                sensor_visualizer = _SensorVisualizer(
+                    robot_id=robot_id,
+                    camera_link_index=link_map.get("camera_optical_frame"),
+                    imu_link_index=link_map.get("imu_link"),
+                )
+                sensor_visualizer.enable_gui_elements()
+            except Exception as exc:
+                sensor_visualizer = None
+                print("[Main] sensor visualizer init failed; disabling overlays.", f"error={exc}", flush=True)
         elif connection_mode == pb.GUI:
-            print("[Main] GUI sensor overlays disabled (pass --sensors to enable).", flush=True)
+            print("[Main] GUI sensor overlays disabled (use --sensors to enable).", flush=True)
 
         # 3) Lift the robot so the very lowest link point is just above z=0.
         _ensure_above_ground(robot_id, clearance=2e-3, plane_z=0.0)
@@ -486,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"Loaded robot with body unique ID: {robot_id} (plane id: {plane_id})")
     finally:
+        if sensor_visualizer is not None:
+            sensor_visualizer.shutdown()
         if pb.isConnected(cid):
             pb.disconnect(cid)
 
@@ -494,3 +580,10 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+_DEFAULT_MPL_DIR = Path(__file__).resolve().parent.parent / ".mpl_cache"
+if "MPLCONFIGDIR" not in os.environ:
+    try:
+        _DEFAULT_MPL_DIR.mkdir(exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = str(_DEFAULT_MPL_DIR)
+    except Exception:
+        pass
