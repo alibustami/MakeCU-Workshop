@@ -52,15 +52,13 @@ class RotationMotionController:
         "ankle_roll_joint",
     )
     _MAX_FORCE = 150.0
-    _STEP_FREQUENCY = 0.8  # steps per second for each leg (slower for stability)
-    _HIP_SWING = 0.12
-    _HIP_ROLL_SWING = 0.18
-    _THIGH_SWING = 0.35
-    _KNEE_BASE = 0.45
-    _KNEE_SWING = 0.22
-    _ANKLE_BASE = -0.40
-    _ANKLE_SWING = 0.15
-    _ANKLE_ROLL_SWING = -0.10
+    _STEP_FREQUENCY = 0.6  # steps per second for each leg (slower for stability)
+    _HIP_SWING = 0.06
+    _HIP_ROLL_SWING = 0.10
+    _THIGH_SWING = 0.14
+    _KNEE_SWING = 0.10
+    _ANKLE_SWING = 0.06
+    _ANKLE_ROLL_SWING = -0.04
 
     def __init__(self, robot_id: int, *, angular_speed: float, mode: str, amount: float) -> None:
         if angular_speed <= 0.0:
@@ -156,6 +154,16 @@ class RotationMotionController:
         if self._start_time is not None:
             duration = max(0.0, now - self._start_time)
         self._summary = RotationMotionSummary(duration_s=duration, angle_rad=self._last_angle)
+        if self._joint_indices:
+            for joint_name, joint_idx in self._joint_indices.items():
+                target = self._rest_pose[joint_name]
+                pb.setJointMotorControl2(
+                    self._robot_id,
+                    joint_idx,
+                    pb.POSITION_CONTROL,
+                    targetPosition=target,
+                    force=self._MAX_FORCE,
+                )
         self._finished = True
 
     def update(self, now: Optional[float] = None) -> None:
@@ -177,7 +185,7 @@ class RotationMotionController:
         progress = min(elapsed / self._target_duration, 1.0)
         angle = progress * self._target_angle
         self._apply_base_rotation(angle)
-        self._apply_gait(elapsed)
+        self._apply_gait(elapsed, progress)
 
         if progress >= 1.0:
             self.stop(current_time)
@@ -193,38 +201,37 @@ class RotationMotionController:
         pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), angular_velocity)
         self._last_angle = angle
 
-    def _apply_gait(self, elapsed: float) -> None:
+    def _apply_gait(self, elapsed: float, progress: float) -> None:
         phase = elapsed * self._STEP_FREQUENCY * 2.0 * math.pi
         leg_configs = {"l": phase, "r": phase + math.pi}
+        amplitude_scale = math.sin(min(progress, 1.0) * math.pi)
 
         for leg_prefix, leg_phase in leg_configs.items():
             direction_sign = self._direction if leg_prefix == "l" else -self._direction
             hip_pitch_target = (
                 self._rest_pose[f"{leg_prefix}_hip_pitch_joint"]
-                + self._HIP_SWING * math.sin(leg_phase) * 0.5
+                + amplitude_scale * self._HIP_SWING * math.sin(leg_phase) * 0.5
             )
             hip_roll_target = (
                 self._rest_pose[f"{leg_prefix}_hip_roll_joint"]
-                + direction_sign * self._HIP_ROLL_SWING * math.sin(leg_phase + math.pi / 2.0)
+                + amplitude_scale * direction_sign * self._HIP_ROLL_SWING * math.sin(leg_phase + math.pi / 2.0)
             )
             thigh_target = (
                 self._rest_pose[f"{leg_prefix}_thigh_joint"]
-                + direction_sign * self._THIGH_SWING * math.sin(leg_phase)
+                + amplitude_scale * direction_sign * self._THIGH_SWING * math.sin(leg_phase)
             )
 
             knee_target = (
                 self._rest_pose[f"{leg_prefix}_calf_joint"]
-                + self._KNEE_BASE
-                + self._KNEE_SWING * math.sin(leg_phase - math.pi / 2.0)
+                + amplitude_scale * self._KNEE_SWING * math.sin(leg_phase - math.pi / 2.0)
             )
             ankle_pitch_target = (
                 self._rest_pose[f"{leg_prefix}_ankle_pitch_joint"]
-                + self._ANKLE_BASE
-                + self._ANKLE_SWING * math.sin(leg_phase + math.pi / 2.0)
+                + amplitude_scale * self._ANKLE_SWING * math.sin(leg_phase + math.pi / 2.0)
             )
             ankle_roll_target = (
                 self._rest_pose[f"{leg_prefix}_ankle_roll_joint"]
-                + direction_sign * self._ANKLE_ROLL_SWING * math.sin(leg_phase)
+                + amplitude_scale * direction_sign * self._ANKLE_ROLL_SWING * math.sin(leg_phase)
             )
 
             self._set_joint_target(f"{leg_prefix}_hip_pitch_joint", hip_pitch_target)

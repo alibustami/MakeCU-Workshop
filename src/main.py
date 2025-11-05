@@ -634,6 +634,29 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         print(f"Loaded robot with body unique ID: {robot_id} (plane id: {plane_id})")
+
+        if connection_mode == pb.GUI:
+            print(
+                "[Main] controllers finished; keeping GUI open until you close the window or press Ctrl+C.",
+                flush=True,
+            )
+            idle_sleep = max(args.timestep, 1.0 / 240.0)
+            try:
+                while pb.isConnected(cid):
+                    now = time.perf_counter()
+                    try:
+                        pb.stepSimulation()
+                    except Exception as exc:
+                        print("[Main] idle loop stepSimulation failed", f"error={exc}", flush=True)
+                        break
+                    if sensor_visualizer is not None:
+                        try:
+                            sensor_visualizer.update(now)
+                        except Exception as exc:
+                            print("[Main] sensor_visualizer.update error", f"error={exc}", flush=True)
+                    time.sleep(idle_sleep)
+            except KeyboardInterrupt:
+                print("[Main] interrupt received; exiting idle loop.", flush=True)
     finally:
         if sensor_visualizer is not None:
             sensor_visualizer.shutdown()
