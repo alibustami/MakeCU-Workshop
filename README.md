@@ -41,6 +41,16 @@ Example: move forward for three meters in the GUI.
 python -m src.main --gui --walk-mode distance --walk-amount 3
 ```
 
+### Rotation motion
+After the forward walk completes, the simulation can execute an in-place turn that mimics the ROS `cmd_vel` angular.z command:
+- `--turn-angle`: yaw rotation in degrees (positive turns counter-clockwise, default: 90). Set to `0` to skip the turn.
+- `--turn-speed`: yaw rotation speed in degrees per second (default: 45).
+
+Example: walk for two seconds then rotate 45 degrees right at 60 deg/s.
+```bash
+python -m src.main --gui --walk-amount 2 --turn-angle -45 --turn-speed 60
+```
+
 ### Example
 ```bash
 python -m src.main --gui --steps 1200 --timestep 0.01

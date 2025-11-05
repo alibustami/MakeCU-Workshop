@@ -17,9 +17,11 @@ import pybullet as pb
 import pybullet_data
 
 if __package__ is None or __package__ == "":
-    from forward_motion import ForwardMotionController
+    from forward_motion import ForwardMotionController, ForwardMotionSummary
+    from rotation_motion import RotationMotionController, RotationMotionSummary
 else:
-    from .forward_motion import ForwardMotionController
+    from .forward_motion import ForwardMotionController, ForwardMotionSummary
+    from .rotation_motion import RotationMotionController, RotationMotionSummary
 
 try:
     import matplotlib.pyplot as plt
@@ -71,6 +73,18 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Forward speed in meters per second while walking.",
     )
     parser.add_argument(
+        "--turn-angle",
+        type=float,
+        default=90.0,
+        help="Target yaw rotation in degrees (positive rotates counter-clockwise, 0 disables the turn).",
+    )
+    parser.add_argument(
+        "--turn-speed",
+        type=float,
+        default=45.0,
+        help="Yaw rotation speed in degrees per second (must be positive).",
+    )
+    parser.add_argument(
         "--sensors",
         dest="sensors",
         action="store_true",
@@ -89,6 +103,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--walk-amount must be non-negative")
     if args.walk_speed <= 0.0:
         parser.error("--walk-speed must be positive")
+    if args.turn_speed <= 0.0:
+        parser.error("--turn-speed must be positive")
 
     if args.sensors is None:
         args.sensors = args.gui
@@ -507,9 +523,9 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-        motion_controller: Optional[ForwardMotionController] = None
-        loop_start_time = time.perf_counter()
-        last_loop_debug = loop_start_time
+        controller_queue: list[tuple[str, object]] = []
+        controller_summaries: list[tuple[str, object]] = []
+
         if args.walk_amount > 0.0:
             print(
                 "[Main] creating ForwardMotionController",
@@ -518,29 +534,60 @@ def main(argv: list[str] | None = None) -> int:
                 f"speed={args.walk_speed}",
                 flush=True,
             )
-            motion_controller = ForwardMotionController(
+            forward_controller = ForwardMotionController(
                 robot_id=robot_id,
                 speed=args.walk_speed,
                 mode=args.walk_mode,
                 amount=args.walk_amount,
             )
-            motion_controller.start(time.perf_counter())
+            controller_queue.append(("forward", forward_controller))
+
+        if abs(args.turn_angle) > 1e-6:
+            print(
+                "[Main] creating RotationMotionController",
+                f"angle={args.turn_angle} deg",
+                f"speed={args.turn_speed} deg/s",
+                flush=True,
+            )
+            rotation_controller = RotationMotionController(
+                robot_id=robot_id,
+                angular_speed=math.radians(args.turn_speed),
+                mode="angle",
+                amount=math.radians(args.turn_angle),
+            )
+            controller_queue.append(("rotation", rotation_controller))
+
+        active_label: Optional[str] = None
+        active_controller: Optional[object] = None
+        loop_start_time = time.perf_counter()
+        last_loop_debug = loop_start_time
+
+        if controller_queue:
+            active_label, active_controller = controller_queue.pop(0)
+            active_controller.start(time.perf_counter())  # type: ignore[attr-defined]
 
         for step in range(max(args.steps, 0)):
             now = time.perf_counter()
-            if motion_controller is not None and not motion_controller.is_finished:
-                motion_controller.update(now)
+            if active_controller is not None and not active_controller.is_finished:  # type: ignore[union-attr]
+                active_controller.update(now)  # type: ignore[attr-defined]
 
             pb.stepSimulation()
             if sensor_visualizer is not None:
                 sensor_visualizer.update(now)
             time.sleep(args.timestep)
 
-            if motion_controller is not None and (now - last_loop_debug) >= 0.5:
+            if active_controller is not None and (now - last_loop_debug) >= 0.5:
                 base_pos, base_orn = pb.getBasePositionAndOrientation(robot_id)
                 lin_vel, ang_vel = pb.getBaseVelocity(robot_id)
                 roll, pitch, yaw = pb.getEulerFromQuaternion(base_orn)
-                travelled = motion_controller.travelled_distance
+                travelled = getattr(active_controller, "travelled_distance", None)
+                rotated = getattr(active_controller, "rotated_angle", None)
+                metric_parts = []
+                if travelled is not None:
+                    metric_parts.append(f"travelled={travelled:.3f} m")
+                if rotated is not None:
+                    metric_parts.append(f"rotated={math.degrees(rotated):.2f} deg")
+                metric_str = ", ".join(metric_parts)
                 print(
                     "[Main] loop",
                     f"step={step}",
@@ -549,24 +596,42 @@ def main(argv: list[str] | None = None) -> int:
                     f"base_rpy=({math.degrees(roll):.2f},{math.degrees(pitch):.2f},{math.degrees(yaw):.2f}) deg",
                     f"base_lin_vel=({lin_vel[0]:.3f},{lin_vel[1]:.3f},{lin_vel[2]:.3f})",
                     f"base_ang_vel=({ang_vel[0]:.3f},{ang_vel[1]:.3f},{ang_vel[2]:.3f})",
-                    f"controller_finished={motion_controller.is_finished}",
-                    f"controller_travelled={travelled:.3f} m",
+                    f"controller={active_label}",
+                    f"controller_finished={active_controller.is_finished}",  # type: ignore[union-attr]
+                    metric_str,
                     flush=True,
                 )
                 last_loop_debug = now
 
-            if motion_controller is not None and motion_controller.is_finished:
-                break
+            if active_controller is not None and active_controller.is_finished:  # type: ignore[union-attr]
+                summary = getattr(active_controller, "summary", None)
+                if summary is not None:
+                    controller_summaries.append((active_label or "", summary))
+                active_label = None
+                active_controller = None
+                if controller_queue:
+                    active_label, active_controller = controller_queue.pop(0)
+                    active_controller.start(now)  # type: ignore[attr-defined]
+                else:
+                    break
 
-        if motion_controller is not None and not motion_controller.is_finished:
-            motion_controller.stop()
+        if active_controller is not None and not active_controller.is_finished:  # type: ignore[union-attr]
+            active_controller.stop()  # type: ignore[attr-defined]
+            summary = getattr(active_controller, "summary", None)
+            if summary is not None:
+                controller_summaries.append((active_label or "", summary))
 
-        if motion_controller is not None and motion_controller.summary is not None:
-            summary = motion_controller.summary
-            print(
-                f"Forward walk finished in {summary.duration_s:.2f}s "
-                f"covering {summary.distance_m:.2f} m.",
-            )
+        for label, summary in controller_summaries:
+            if isinstance(summary, ForwardMotionSummary):
+                print(
+                    f"Forward walk finished in {summary.duration_s:.2f}s "
+                    f"covering {summary.distance_m:.2f} m.",
+                )
+            elif isinstance(summary, RotationMotionSummary):
+                print(
+                    f"Rotation finished in {summary.duration_s:.2f}s "
+                    f"turning {math.degrees(summary.angle_rad):.1f} deg.",
+                )
 
         print(f"Loaded robot with body unique ID: {robot_id} (plane id: {plane_id})")
     finally:
