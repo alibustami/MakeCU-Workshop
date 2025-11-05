@@ -1,0 +1,9 @@
+[project]
+name = "workshop"
+version = "0.1.0"
+description = "MakeCU workshop"
+requires-python = ">=3.11"
+dependencies = [
+    "pybullet>=3.2.7",
+    "matplotlib>=3.8",
+]
