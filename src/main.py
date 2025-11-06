@@ -85,6 +85,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Yaw rotation speed in degrees per second (must be positive).",
     )
     parser.add_argument(
+        "--base",
+        choices=("free", "fixed"),
+        default="free",
+        help="Set to 'fixed' to rigidly attach the base to the world (default: %(default)s).",
+    )
+    parser.add_argument(
         "--sensors",
         dest="sensors",
         action="store_true",
@@ -435,6 +441,7 @@ def _ensure_above_ground(body_id: int, clearance: float = 2e-3, plane_z: float =
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv if argv is not None else sys.argv[1:])
+    base_locked = args.base == "fixed"
 
     connection_mode = pb.GUI if args.gui else pb.DIRECT
     print(
@@ -522,6 +529,8 @@ def main(argv: list[str] | None = None) -> int:
             f"base_quat=({base_orn[0]:.4f},{base_orn[1]:.4f},{base_orn[2]:.4f},{base_orn[3]:.4f})",
             flush=True,
         )
+        if base_locked:
+            print("[Main] base operating in rigid (kinematic) mode", flush=True)
 
         controller_queue: list[tuple[str, object]] = []
         controller_summaries: list[tuple[str, object]] = []
@@ -539,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
                 speed=args.walk_speed,
                 mode=args.walk_mode,
                 amount=args.walk_amount,
+                lock_base=base_locked,
             )
             controller_queue.append(("forward", forward_controller))
 
@@ -554,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
                 angular_speed=math.radians(args.turn_speed),
                 mode="angle",
                 amount=math.radians(args.turn_angle),
+                lock_base=base_locked,
             )
             controller_queue.append(("rotation", rotation_controller))
 

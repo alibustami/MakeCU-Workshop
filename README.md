@@ -51,6 +51,22 @@ Example: walk for two seconds then rotate 45 degrees right at 60 deg/s.
 python -m src.main --gui --walk-amount 2 --turn-angle -45 --turn-speed 60
 ```
 
+### Keyboard teleoperation
+Control the robot live from the PyBullet GUI using the arrow keys:
+```bash
+python -m src.main_keyboard --gui
+```
+
+Controls:
+- Up Arrow: walk forward
+- Down Arrow: walk backward
+- Left Arrow: rotate counter-clockwise
+- Right Arrow: rotate clockwise
+- Space: stop the current motion and clear the queue
+- Esc or `q`: exit
+
+You can tune the distance and speed per key press with `--forward-distance` and `--forward-speed`, and adjust rotation behavior with `--turn-angle` and `--turn-speed`. Use `--queue-limit` to cap how many motions can be queued.
+
 ### Example
 ```bash
 python -m src.main --gui --steps 1200 --timestep 0.01

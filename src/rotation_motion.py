@@ -60,7 +60,15 @@ class RotationMotionController:
     _ANKLE_SWING = 0.06
     _ANKLE_ROLL_SWING = -0.04
 
-    def __init__(self, robot_id: int, *, angular_speed: float, mode: str, amount: float) -> None:
+    def __init__(
+        self,
+        robot_id: int,
+        *,
+        angular_speed: float,
+        mode: str,
+        amount: float,
+        lock_base: bool = False,
+    ) -> None:
         if angular_speed <= 0.0:
             raise ValueError("angular_speed must be positive")
         if mode not in self._VALID_MODES:
@@ -92,6 +100,7 @@ class RotationMotionController:
         self._rest_pose: Dict[str, float] = {}
         self._last_angle = 0.0
         self._direction = math.copysign(1.0, self._target_angle)
+        self._lock_base = lock_base
 
     @staticmethod
     def _derive_targets(angular_speed: float, mode: str, amount: float) -> Tuple[float, float]:
@@ -197,11 +206,16 @@ class RotationMotionController:
         delta_quat = _quat_from_yaw(angle)
         new_orientation = _quat_multiply(delta_quat, self._start_orientation)
         pb.resetBasePositionAndOrientation(self._robot_id, self._start_position, new_orientation)
-        angular_velocity = (0.0, 0.0, self._angular_speed * self._direction)
-        pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), angular_velocity)
+        if self._lock_base:
+            pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        else:
+            angular_velocity = (0.0, 0.0, self._angular_speed * self._direction)
+            pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), angular_velocity)
         self._last_angle = angle
 
     def _apply_gait(self, elapsed: float, progress: float) -> None:
+        if self._lock_base:
+            return
         phase = elapsed * self._STEP_FREQUENCY * 2.0 * math.pi
         leg_configs = {"l": phase, "r": phase + math.pi}
         amplitude_scale = math.sin(min(progress, 1.0) * math.pi)
@@ -242,6 +256,8 @@ class RotationMotionController:
             self._set_joint_target(f"{leg_prefix}_ankle_roll_joint", ankle_roll_target)
 
     def _set_joint_target(self, joint_name: str, target: float) -> None:
+        if self._lock_base:
+            return
         index = self._joint_indices[joint_name]
         pb.setJointMotorControl2(
             self._robot_id,

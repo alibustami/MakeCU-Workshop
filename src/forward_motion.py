@@ -54,7 +54,7 @@ class ForwardMotionController:
     _ANKLE_SWING = 0.20
     _ANKLE_ROLL_SWING = -0.08
 
-    def __init__(self, robot_id: int, *, speed: float, mode: str, amount: float) -> None:
+    def __init__(self, robot_id: int, *, speed: float, mode: str, amount: float, lock_base: bool = False) -> None:
         if speed <= 0.0:
             raise ValueError("speed must be positive")
         if amount <= 0.0:
@@ -76,6 +76,7 @@ class ForwardMotionController:
         self._joint_indices: Dict[str, int] = {}
         self._rest_pose: Dict[str, float] = {}
         self._last_distance = 0.0
+        self._lock_base = lock_base
 
     @staticmethod
     def _derive_targets(speed: float, mode: str, amount: float) -> Tuple[float, float]:
@@ -141,6 +142,38 @@ class ForwardMotionController:
         if now is None:
             now = time.perf_counter()
         pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        if (
+            self._start_position is not None
+            and self._forward_dir is not None
+            and self._start_orientation is not None
+        ):
+            final_position = (
+                self._start_position[0] + self._forward_dir[0] * self._last_distance,
+                self._start_position[1] + self._forward_dir[1] * self._last_distance,
+                self._start_position[2],
+            )
+            pb.resetBasePositionAndOrientation(self._robot_id, final_position, self._start_orientation)
+        if self._joint_indices and not self._lock_base:
+            neutral_offsets = {
+                "hip_pitch_joint": 0.0,
+                "hip_roll_joint": 0.0,
+                "thigh_joint": 0.0,
+                "calf_joint": self._KNEE_BASE,
+                "ankle_pitch_joint": self._ANKLE_BASE,
+                "ankle_roll_joint": 0.0,
+            }
+            for leg_prefix in ("l_", "r_"):
+                for suffix, offset in neutral_offsets.items():
+                    joint_name = f"{leg_prefix}{suffix}"
+                    joint_idx = self._joint_indices[joint_name]
+                    target = self._rest_pose[joint_name] + offset
+                    pb.setJointMotorControl2(
+                        self._robot_id,
+                        joint_idx,
+                        pb.POSITION_CONTROL,
+                        targetPosition=target,
+                        force=self._MAX_FORCE,
+                    )
         duration = 0.0
         if self._start_time is not None:
             duration = max(0.0, now - self._start_time)
@@ -184,15 +217,20 @@ class ForwardMotionController:
             self._start_position[2],
         )
         pb.resetBasePositionAndOrientation(self._robot_id, new_position, self._start_orientation)
-        forward_velocity = (
-            self._forward_dir[0] * self._speed,
-            self._forward_dir[1] * self._speed,
-            0.0,
-        )
-        pb.resetBaseVelocity(self._robot_id, forward_velocity, (0.0, 0.0, 0.0))
+        if self._lock_base:
+            pb.resetBaseVelocity(self._robot_id, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0))
+        else:
+            forward_velocity = (
+                self._forward_dir[0] * self._speed,
+                self._forward_dir[1] * self._speed,
+                0.0,
+            )
+            pb.resetBaseVelocity(self._robot_id, forward_velocity, (0.0, 0.0, 0.0))
         self._last_distance = travelled
 
     def _apply_gait(self, elapsed: float) -> None:
+        if self._lock_base:
+            return
         phase = elapsed * self._STEP_FREQUENCY * 2.0 * math.pi
         leg_configs = {"l": phase, "r": phase + math.pi}
 
@@ -223,6 +261,8 @@ class ForwardMotionController:
             self._set_joint_target(f"{leg_prefix}_ankle_roll_joint", ankle_roll_target)
 
     def _set_joint_target(self, joint_name: str, target: float) -> None:
+        if self._lock_base:
+            return
         index = self._joint_indices[joint_name]
         pb.setJointMotorControl2(
             self._robot_id,
