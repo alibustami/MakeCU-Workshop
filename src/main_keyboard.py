@@ -20,6 +20,7 @@ except AttributeError:
     pass
 
 if __package__ in (None, ""):
+    from backward_motion import BackwardMotionController
     from forward_motion import ForwardMotionController, ForwardMotionSummary
     from rotation_motion import RotationMotionController, RotationMotionSummary
     from main import (  # type: ignore[attr-defined]  # noqa: PLC2701
@@ -30,6 +31,7 @@ if __package__ in (None, ""):
         _workspace_root,
     )
 else:
+    from .backward_motion import BackwardMotionController
     from .forward_motion import ForwardMotionController, ForwardMotionSummary
     from .rotation_motion import RotationMotionController, RotationMotionSummary
     from .main import (  # type: ignore[attr-defined]  # noqa: PLC2701
@@ -39,37 +41,6 @@ else:
         _resolve_urdf,
         _workspace_root,
     )
-
-
-class DirectionalForwardMotionController(ForwardMotionController):
-    """Extend ForwardMotionController to support walking backwards."""
-
-    def __init__(
-        self,
-        robot_id: int,
-        *,
-        speed: float,
-        mode: str,
-        amount: float,
-        direction: float,
-        lock_base: bool = False,
-    ) -> None:
-        super().__init__(robot_id=robot_id, speed=speed, mode=mode, amount=amount, lock_base=lock_base)
-        self._direction_sign = 1.0 if direction >= 0.0 else -1.0
-
-    def start(self, start_time: Optional[float] = None) -> None:  # noqa: D401 - inherit docstring
-        super().start(start_time)
-        if self._direction_sign < 0.0 and getattr(self, "_forward_dir", None) is not None:
-            forward_dir = getattr(self, "_forward_dir")  # type: ignore[attr-defined]
-            self._forward_dir = (  # type: ignore[attr-defined]
-                -forward_dir[0],
-                -forward_dir[1],
-                -forward_dir[2],
-            )
-
-    def _apply_base_motion(self, travelled: float) -> None:  # type: ignore[override]
-        super()._apply_base_motion(travelled)
-        self._last_distance = travelled * self._direction_sign  # type: ignore[attr-defined]
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -180,19 +151,33 @@ def _create_forward_command(
     *,
     distance: float,
     speed: float,
-    direction: float,
     lock_base: bool,
-) -> Tuple[str, DirectionalForwardMotionController]:
-    label = "forward" if direction >= 0.0 else "backward"
-    controller = DirectionalForwardMotionController(
+) -> Tuple[str, ForwardMotionController]:
+    controller = ForwardMotionController(
         robot_id=robot_id,
         speed=speed,
         mode="distance",
         amount=distance,
-        direction=direction,
         lock_base=lock_base,
     )
-    return label, controller
+    return "forward", controller
+
+
+def _create_backward_command(
+    robot_id: int,
+    *,
+    distance: float,
+    speed: float,
+    lock_base: bool,
+) -> Tuple[str, BackwardMotionController]:
+    controller = BackwardMotionController(
+        robot_id=robot_id,
+        speed=speed,
+        mode="distance",
+        amount=distance,
+        lock_base=lock_base,
+    )
+    return "backward", controller
 
 
 def _create_rotation_command(
@@ -218,9 +203,15 @@ def _handle_summary(label: str, summary: Optional[object]) -> None:
     if summary is None:
         return
     if isinstance(summary, ForwardMotionSummary):
+        if label == "backward":
+            direction = "Backward walk"
+            distance = abs(summary.distance_m)
+        else:
+            direction = "Forward walk"
+            distance = summary.distance_m
         print(
-            f"[Keyboard] {label} finished in {summary.duration_s:.2f}s "
-            f"covering {summary.distance_m:.2f} m.",
+            f"[Keyboard] {direction} finished in {summary.duration_s:.2f}s "
+            f"covering {distance:.2f} m.",
             flush=True,
         )
     elif isinstance(summary, RotationMotionSummary):
@@ -319,15 +310,13 @@ def main(argv: list[str] | None = None) -> int:
                         robot_id,
                         distance=args.forward_distance,
                         speed=args.forward_speed,
-                        direction=1.0,
                         lock_base=base_locked,
                     )
                 elif key == pb.B3G_DOWN_ARROW:
-                    label, controller = _create_forward_command(
+                    label, controller = _create_backward_command(
                         robot_id,
                         distance=args.forward_distance,
                         speed=args.forward_speed,
-                        direction=-1.0,
                         lock_base=base_locked,
                     )
                 elif key == pb.B3G_LEFT_ARROW:

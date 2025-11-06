@@ -17,9 +17,11 @@ import pybullet as pb
 import pybullet_data
 
 if __package__ is None or __package__ == "":
+    from backward_motion import BackwardMotionController
     from forward_motion import ForwardMotionController, ForwardMotionSummary
     from rotation_motion import RotationMotionController, RotationMotionSummary
 else:
+    from .backward_motion import BackwardMotionController
     from .forward_motion import ForwardMotionController, ForwardMotionSummary
     from .rotation_motion import RotationMotionController, RotationMotionSummary
 
@@ -71,6 +73,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=0.6,
         help="Forward speed in meters per second while walking.",
+    )
+    parser.add_argument(
+        "--walk-direction",
+        choices=("forward", "backward"),
+        default="forward",
+        help="Set to 'backward' to walk in reverse during the scripted phase.",
     )
     parser.add_argument(
         "--turn-angle",
@@ -536,21 +544,32 @@ def main(argv: list[str] | None = None) -> int:
         controller_summaries: list[tuple[str, object]] = []
 
         if args.walk_amount > 0.0:
+            walk_direction = args.walk_direction
             print(
                 "[Main] creating ForwardMotionController",
                 f"mode={args.walk_mode}",
                 f"amount={args.walk_amount}",
                 f"speed={args.walk_speed}",
+                f"direction={walk_direction}",
                 flush=True,
             )
-            forward_controller = ForwardMotionController(
-                robot_id=robot_id,
-                speed=args.walk_speed,
-                mode=args.walk_mode,
-                amount=args.walk_amount,
-                lock_base=base_locked,
-            )
-            controller_queue.append(("forward", forward_controller))
+            if walk_direction == "backward":
+                walk_controller = BackwardMotionController(
+                    robot_id=robot_id,
+                    speed=args.walk_speed,
+                    mode=args.walk_mode,
+                    amount=args.walk_amount,
+                    lock_base=base_locked,
+                )
+            else:
+                walk_controller = ForwardMotionController(
+                    robot_id=robot_id,
+                    speed=args.walk_speed,
+                    mode=args.walk_mode,
+                    amount=args.walk_amount,
+                    lock_base=base_locked,
+                )
+            controller_queue.append((walk_direction, walk_controller))
 
         if abs(args.turn_angle) > 1e-6:
             print(
@@ -634,10 +653,16 @@ def main(argv: list[str] | None = None) -> int:
 
         for label, summary in controller_summaries:
             if isinstance(summary, ForwardMotionSummary):
-                print(
-                    f"Forward walk finished in {summary.duration_s:.2f}s "
-                    f"covering {summary.distance_m:.2f} m.",
-                )
+                if label == "backward":
+                    print(
+                        f"Backward walk finished in {summary.duration_s:.2f}s "
+                        f"covering {abs(summary.distance_m):.2f} m.",
+                    )
+                else:
+                    print(
+                        f"Forward walk finished in {summary.duration_s:.2f}s "
+                        f"covering {summary.distance_m:.2f} m.",
+                    )
             elif isinstance(summary, RotationMotionSummary):
                 print(
                     f"Rotation finished in {summary.duration_s:.2f}s "
