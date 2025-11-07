@@ -6,6 +6,18 @@ This project loads the `clpai_12dof_0905.urdf` robot into a PyBullet simulation.
 - Python 3.11 or newer
 - `pybullet` (installed automatically via `pip install .`)
 
+## Install uv
+Use [uv](https://github.com/astral-sh/uv) for fast, reproducible installs:
+
+- macOS / Linux:
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+- Windows (PowerShell):
+  ```powershell
+  powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
 ## Setup
 ```bash
 python -m venv .venv
