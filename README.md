@@ -2,6 +2,11 @@
 
 This project loads the `clpai_12dof_0905.urdf` robot into a PyBullet simulation. The script can run headless or with the PyBullet GUI.
 
+<img src="assets/curc.jpeg" alt="CU Robotics Club logo" width="200">
+
+<img src="assets/environment.png" alt="Environment" width="500">
+
+
 ## Requirements
 - Python 3.11 or newer
 - `pybullet` (installed automatically via `pip install .`)
@@ -27,10 +32,6 @@ pip install .
 ```
 
 ## Usage
-Run the script from the project root:
-```bash
-python -m src.main
-```
 
 ### GUI mode
 Add the `--gui` flag to open the PyBullet visualizer:
