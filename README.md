@@ -67,6 +67,17 @@ Controls:
 
 You can tune the distance and speed per key press with `--forward-distance` and `--forward-speed`, and adjust rotation behavior with `--turn-angle` and `--turn-speed`. Use `--queue-limit` to cap how many motions can be queued.
 
+### URDF loader utility
+Use the lightweight loader to spawn any URDF (including the workshop robot) without the motion controllers:
+```bash
+python src/2_urdf_loader.py --gui --urdf robot/clpai_12dof_0905.urdf
+```
+- `--gui` toggles the PyBullet visualizer (omit for DIRECT/headless).
+- `--urdf PATH` points to a specific URDF (defaults to the bundled robot).
+- `--resource-root DIR` overrides the mesh search directory if your URDF references external assets.
+- `--fixed-base`, `--no-plane`, `--timestep`, `--settle-steps`, `--run-seconds`, and `--gravity` mirror the script’s CLI so you can quickly test spawn parameters.
+Run `python src/1_urdf_loader.py --help` to inspect the full option list.
+
 ### Example
 ```bash
 python -m src.main --gui --steps 1200 --timestep 0.01
