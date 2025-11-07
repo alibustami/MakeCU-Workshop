@@ -35,7 +35,7 @@ python -m src.main
 ### GUI mode
 Add the `--gui` flag to open the PyBullet visualizer:
 ```bash
-python -m src.main --gui
+uv run src/main.py --gui
 ```
 
 ### Simulation controls
@@ -50,7 +50,7 @@ Use the forward-motion options to command the robot base to walk:
 
 Example: move forward for three meters in the GUI.
 ```bash
-python -m src.main --gui --walk-mode distance --walk-amount 3
+uv run src/main.py --gui --walk-mode distance --walk-amount 3
 ```
 
 ### Rotation motion
@@ -60,13 +60,13 @@ After the forward walk completes, the simulation can execute an in-place turn th
 
 Example: walk for two seconds then rotate 45 degrees right at 60 deg/s.
 ```bash
-python -m src.main --gui --walk-amount 2 --turn-angle -45 --turn-speed 60
+uv run src/main.py --gui --walk-amount 2 --turn-angle -45 --turn-speed 60
 ```
 
 ### Keyboard teleoperation
 Control the robot live from the PyBullet GUI using the arrow keys:
 ```bash
-python -m src.main_keyboard --gui
+uv run src/main_keyboard.py --gui
 ```
 
 Controls:
@@ -82,7 +82,7 @@ You can tune the distance and speed per key press with `--forward-distance` and 
 ### URDF loader utility
 Use the lightweight loader to spawn any URDF (including the workshop robot) without the motion controllers:
 ```bash
-python src/2_urdf_loader.py --gui --urdf robot/clpai_12dof_0905.urdf
+uv run src/1_urdf_loader.py --gui --urdf robot/clpai_12dof_0905.urdf
 ```
 - `--gui` toggles the PyBullet visualizer (omit for DIRECT/headless).
 - `--urdf PATH` points to a specific URDF (defaults to the bundled robot).
@@ -92,7 +92,7 @@ Run `python src/1_urdf_loader.py --help` to inspect the full option list.
 
 ### Example
 ```bash
-python -m src.main --gui --steps 1200 --timestep 0.01
+uv run src/main.py --gui --steps 1200 --timestep 0.01
 ```
 
 ## Troubleshooting
