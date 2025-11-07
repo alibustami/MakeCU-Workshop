@@ -48,6 +48,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--gui",
         action="store_true",
+        default=True,
         help="Open the PyBullet GUI (required for keyboard teleoperation).",
     )
     parser.add_argument(
