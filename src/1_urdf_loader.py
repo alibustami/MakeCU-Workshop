@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import pybullet as pb
 import pybullet_data
@@ -26,12 +28,13 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--gui",
         action="store_true",
+        default=True,
         help="Open the PyBullet GUI instead of running headless (DIRECT).",
     )
     parser.add_argument(
         "--urdf",
         type=str,
-        default=None,
+        default="./robot/clpai_12dof_0905.urdf",
         help="Path to the URDF to load (defaults to the workshop robot).",
     )
     parser.add_argument(
@@ -146,13 +149,88 @@ def _run_steps(step_count: int, timestep: float) -> None:
         time.sleep(timestep)
 
 
-def _run_for(duration: float, timestep: float) -> None:
+def _run_for(duration: float, timestep: float, per_step: Callable[[], None] | None = None) -> None:
     if duration <= 0.0:
         return
     end_time = time.perf_counter() + duration
     while time.perf_counter() < end_time:
+        if per_step is not None:
+            per_step()
         pb.stepSimulation()
         time.sleep(timestep)
+
+
+@dataclass(slots=True)
+class _JointSliderControl:
+    joint_index: int
+    slider_id: int
+    max_force: float
+    name: str
+
+
+def _default_slider_range(joint_type: int) -> tuple[float, float]:
+    if joint_type == pb.JOINT_PRISMATIC:
+        return (-0.2, 0.2)
+    return (-math.pi, math.pi)
+
+
+def _resolve_slider_range(joint_type: int, lower: float, upper: float) -> tuple[float, float]:
+    if math.isfinite(lower) and math.isfinite(upper) and upper > lower:
+        return lower, upper
+    return _default_slider_range(joint_type)
+
+
+def _get_controllable_joint_types() -> set[int]:
+    types = {pb.JOINT_REVOLUTE, pb.JOINT_PRISMATIC}
+    continuous = getattr(pb, "JOINT_CONTINUOUS", None)
+    if isinstance(continuous, int):
+        types.add(continuous)
+    return types
+
+
+def _create_joint_sliders(robot_id: int) -> list[_JointSliderControl]:
+    controls: list[_JointSliderControl] = []
+    controllable_types = _get_controllable_joint_types()
+    joint_count = pb.getNumJoints(robot_id)
+    for joint_index in range(joint_count):
+        info = pb.getJointInfo(robot_id, joint_index)
+        joint_type = info[2]
+        if joint_type not in controllable_types:
+            continue
+
+        name_field = info[1]
+        if isinstance(name_field, bytes):
+            joint_name_raw = name_field.decode("utf-8", errors="ignore")
+        else:
+            joint_name_raw = str(name_field)
+        joint_name = joint_name_raw if joint_name_raw else f"joint_{joint_index}"
+        slider_min, slider_max = _resolve_slider_range(joint_type, float(info[8]), float(info[9]))
+        current_pos = pb.getJointState(robot_id, joint_index)[0]
+        clamped_pos = min(max(current_pos, slider_min), slider_max)
+        slider_label = f"{joint_name} (#{joint_index})"
+        slider_id = pb.addUserDebugParameter(slider_label, slider_min, slider_max, clamped_pos)
+        max_force = float(info[10]) if info[10] and info[10] > 0.0 else 50.0
+        controls.append(
+            _JointSliderControl(
+                joint_index=joint_index,
+                slider_id=slider_id,
+                max_force=max_force,
+                name=joint_name,
+            )
+        )
+    return controls
+
+
+def _apply_joint_slider_targets(robot_id: int, controls: Sequence[_JointSliderControl]) -> None:
+    for control in controls:
+        target = pb.readUserDebugParameter(control.slider_id)
+        pb.setJointMotorControl2(
+            bodyUniqueId=robot_id,
+            jointIndex=control.joint_index,
+            controlMode=pb.POSITION_CONTROL,
+            targetPosition=target,
+            force=control.max_force,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -218,17 +296,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush=True,
         )
 
+        joint_sliders: list[_JointSliderControl] = []
+        if args.gui:
+            joint_sliders = _create_joint_sliders(robot_id)
+            if joint_sliders:
+                print(
+                    "[URDF Loader] joint sliders ready",
+                    f"count={len(joint_sliders)}",
+                    flush=True,
+                )
+            else:
+                print("[URDF Loader] no eligible joints for GUI sliders", flush=True)
+
         if args.run_seconds > 0.0:
             print(
                 "[URDF Loader] stepping simulation",
                 f"duration={args.run_seconds} s",
                 flush=True,
             )
-            _run_for(args.run_seconds, args.timestep)
+            if args.gui and joint_sliders:
+                _run_for(
+                    args.run_seconds,
+                    args.timestep,
+                    per_step=lambda: _apply_joint_slider_targets(robot_id, joint_sliders),
+                )
+            else:
+                _run_for(args.run_seconds, args.timestep)
 
         if args.gui:
             print("[URDF Loader] GUI active - close the window or press Ctrl+C to exit.", flush=True)
             while pb.isConnected(cid):
+                if joint_sliders:
+                    _apply_joint_slider_targets(robot_id, joint_sliders)
                 pb.stepSimulation()
                 time.sleep(args.timestep)
 
