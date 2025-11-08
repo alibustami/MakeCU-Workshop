@@ -11,8 +11,18 @@ from rl_base import Humanoid12BulletEnv
 
 URDF = "robot/clpai_12dof_0905_rl.urdf"
 JOINTS = [
-    # Put your 12 controllable joint names here (order matters!)
-    # e.g.: "right_hip_y", "right_knee", "right_ankle", "left_hip_y", ...
+    "r_hip_pitch_joint",
+    "r_hip_roll_joint",
+    "r_thigh_joint",
+    "r_calf_joint",
+    "r_ankle_pitch_joint",
+    "r_ankle_roll_joint",
+    "l_hip_pitch_joint",
+    "l_hip_roll_joint",
+    "l_thigh_joint",
+    "l_calf_joint",
+    "l_ankle_pitch_joint",
+    "l_ankle_roll_joint"
 ]
 FEET = ["r_ankle_pitch_link", "l_ankle_pitch_link"]  # or the appropriate link names
 
