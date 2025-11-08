@@ -1,5 +1,6 @@
 # train.py
 import argparse
+import logging
 import os
 from functools import partial
 
@@ -8,6 +9,8 @@ from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize
 
 from rl_base import Humanoid12BulletEnv
+
+logger = logging.getLogger(__name__)
 
 URDF = "robot/clpai_12dof_0905_rl.urdf"
 JOINTS = [
@@ -24,7 +27,7 @@ JOINTS = [
     "l_ankle_pitch_joint",
     "l_ankle_roll_joint"
 ]
-FEET = ["r_ankle_pitch_link", "l_ankle_pitch_link"]  # or the appropriate link names
+FEET = ["r_ankle_pitch_link", "r_ankle_roll_link", "l_ankle_pitch_link", "l_ankle_roll_link"] 
 
 
 def parse_args():
@@ -57,16 +60,22 @@ def make_env(render_gui: bool = False):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
     args = parse_args()
+    logger.info("Training configuration: %s", vars(args))
     if args.num_agents < 1:
         raise ValueError("num_agents must be >= 1")
 
     num_envs = args.num_agents
     if args.gui and num_envs > 1:
-        print("PyBullet GUI requested; forcing num_agents=1 so the visualizer stays stable.")
+        logger.warning("PyBullet GUI requested; forcing num_agents=1 so the visualizer stays stable.")
         num_envs = 1
 
     env_fn = partial(make_env, render_gui=args.gui)
+    logger.info("Creating %d environment(s); GUI=%s", num_envs, args.gui)
     vec_env = make_vec_env(env_fn, n_envs=num_envs, seed=args.seed)
     vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
@@ -84,10 +93,13 @@ if __name__ == "__main__":
             learning_rate=3e-4, train_freq=64, gradient_steps=64,
             policy_kwargs=dict(net_arch=[256, 256]), verbose=1, seed=args.seed
         )
+    logger.info("Initialized %s model on device=auto", args.algo)
 
     model.learn(total_timesteps=args.total_timesteps)
+    logger.info("Completed training for %d timesteps.", args.total_timesteps)
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     ckpt_prefix = os.path.join(args.checkpoint_dir, f"{args.algo.lower()}_humanoid12")
     model.save(f"{ckpt_prefix}_model")
     vec_env.save(f"{ckpt_prefix}_vecnorm.pkl")
+    logger.info("Saved model and VecNormalize stats to prefix '%s'.", ckpt_prefix)

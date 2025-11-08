@@ -1,3 +1,4 @@
+import logging
 import math
 import time
 from typing import List, Optional, Tuple
@@ -8,6 +9,8 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 from pybullet_utils import bullet_client
+
+logger = logging.getLogger(__name__)
 
 class Humanoid12BulletEnv(gym.Env):
     """
@@ -36,6 +39,7 @@ class Humanoid12BulletEnv(gym.Env):
     ):
         super().__init__()
         assert actuation in ("pos", "torque")
+        self.logger = logging.getLogger(self.__class__.__name__)
         self.urdf_path = urdf_path
         self.render_gui = render
         self.actuation = actuation
@@ -48,6 +52,10 @@ class Humanoid12BulletEnv(gym.Env):
         self.camera_distance = camera_distance
         self.camera_yaw = camera_yaw
         self.camera_pitch = camera_pitch
+        self.logger.info(
+            "Initializing environment (actuation=%s, render=%s, frame_skip=%d, dt=%.5f)",
+            self.actuation, self.render_gui, self.frame_skip, self.dt
+        )
 
         # Bullet connection and basic world
         connection_mode = p.GUI if self.render_gui else p.DIRECT
@@ -123,6 +131,10 @@ class Humanoid12BulletEnv(gym.Env):
             }
             self.foot_link_ids = [idx for name, idx in link_name_to_id.items()
                                   if ("foot" in name.lower() or "ankle" in name.lower())][:2]
+        self.logger.info(
+            "Loaded URDF '%s' with %d controlled joints and %d foot links",
+            self.urdf_path, len(self.joint_ids), len(self.foot_link_ids)
+        )
 
     def _get_obs(self) -> np.ndarray:
         pos, quat = self._p.getBasePositionAndOrientation(self.robot_id)
@@ -205,6 +217,10 @@ class Humanoid12BulletEnv(gym.Env):
 
         self._ensure_above_ground()
         self._update_debug_camera()
+        self.logger.info(
+            "Environment reset complete (friction=%.2f, mass_scale=%.2f)",
+            fric, mass_scale
+        )
         return self._get_obs(), {}
 
     def step(self, action: np.ndarray):
@@ -231,6 +247,11 @@ class Humanoid12BulletEnv(gym.Env):
         truncated = False
 
         info = {"reward_forward": forward, "reward_act_pen": -act_pen}
+        if terminated:
+            self.logger.info(
+                "Episode terminated: height=%.2f roll=%.2f pitch=%.2f reward=%.3f forward_vel=%.3f",
+                pos[2], roll, pitch, reward, forward
+            )
         return obs, reward, terminated, truncated, info
 
     def render(self):
@@ -240,6 +261,7 @@ class Humanoid12BulletEnv(gym.Env):
     def close(self):
         if self._p.isConnected():
             self._p.disconnect()
+            self.logger.info("Disconnected Bullet client.")
 
     # --- Spawn / visualization helpers --------------------------------------
     def _ensure_above_ground(self, clearance: float = 2e-3, plane_z: float = 0.0):
