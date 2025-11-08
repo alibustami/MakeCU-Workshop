@@ -91,6 +91,18 @@ uv run src/1_urdf_loader.py --gui --urdf robot/clpai_12dof_0905.urdf
 - `--fixed-base`, `--no-plane`, `--timestep`, `--settle-steps`, `--run-seconds`, and `--gravity` mirror the script’s CLI so you can quickly test spawn parameters.
 Run `python src/1_urdf_loader.py --help` to inspect the full option list.
 
+### RL training
+Train policies with Stable-Baselines3 via `src/rl_training.py`:
+```bash
+uv run python src/rl_training.py --algo PPO --num-agents 8 --total-timesteps 3000000
+```
+- `--num-agents` controls how many vectorized environments run in parallel; increase to speed up headless training.
+- Add `--gui` to visualize the PyBullet simulation (the script automatically forces a single agent for GUI stability):
+  ```bash
+  uv run python src/rl_training.py --gui --algo SAC --total-timesteps 10000
+  ```
+- Use `--checkpoint-dir` to choose where the policy (`*_model.zip`) and normalization stats (`*_vecnorm.pkl`) are stored; defaults to `checkpoints/`.
+
 ### Example
 ```bash
 uv run src/main.py --gui --steps 1200 --timestep 0.01
